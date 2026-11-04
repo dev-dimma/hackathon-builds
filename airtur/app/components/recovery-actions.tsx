@@ -10,6 +10,7 @@ import {
   Loader2,
   Copy,
   Check,
+  RefreshCw,
 } from "lucide-react";
 
 type Action = "wait" | "rebook" | "replan" | "assistance";
@@ -33,6 +34,21 @@ type FlightContext = {
   gate?: string | null;
   arrivalScheduled?: string;
   arrivalEstimated?: string;
+  verification?: {
+    status?: string;
+    officialAirlineChecked?: boolean;
+    sourceCount?: number;
+    conflictDetected?: boolean;
+    conflictCheckPerformed?: boolean;
+    message?: string;
+    recommendation?: string;
+    reports?: Array<{
+      provider: string;
+      status: string;
+      retrievedAt?: string | null;
+      url?: string | null;
+    }>;
+  };
 };
 
 type RecoveryActionsProps = {
@@ -43,7 +59,7 @@ type RecoveryActionsProps = {
 };
 
 type CopilotFacts = {
-  dataSource?: "live-provider" | "simulated";
+  dataSource?: string;
   status?: string;
   delayText?: string;
   retrievedAt?: string;
@@ -92,10 +108,13 @@ export default function RecoveryActions({
   const [copied, setCopied] = useState(false);
 
   async function generatePlan() {
+    if (loading) return;
+
     setLoading(true);
     setResult("");
     setFacts(null);
     setError("");
+    setCopied(false);
 
     try {
       const response = await fetch("/api/copilot", {
@@ -108,22 +127,31 @@ export default function RecoveryActions({
           budget,
           priority,
           waitingHours: action === "wait" ? Number(hours) : undefined,
-          additionalContext: details,
+          additionalContext: details.trim(),
         }),
       });
 
-      // A server crash can return HTML instead of JSON.
-      const data = (await response.json().catch(() => ({}))) as {
+      const raw = await response.text();
+
+      let data: {
         advice?: string;
         error?: string;
         facts?: CopilotFacts;
-      };
+      } = {};
 
-      if (!response.ok) {
-        throw new Error(data.error || "Unable to generate plan.");
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        throw new Error(
+          "The AI service returned an invalid response. Please retry.",
+        );
       }
 
-      if (typeof data.advice !== "string") {
+      if (!response.ok) {
+        throw new Error(data.error || `Request failed (${response.status}).`);
+      }
+
+      if (!data.advice?.trim()) {
         throw new Error("No AI guidance was returned.");
       }
 
@@ -164,6 +192,7 @@ export default function RecoveryActions({
             key={id}
             type="button"
             className={`recovery-option ${action === id ? "selected" : ""}`}
+            disabled={loading}
             onClick={() => {
               setAction(id);
               setResult("");
@@ -190,6 +219,7 @@ export default function RecoveryActions({
             min="1"
             max="24"
             value={hours}
+            disabled={loading}
             onChange={(e) => setHours(e.target.value)}
           />
         </>
@@ -198,10 +228,12 @@ export default function RecoveryActions({
       <label htmlFor="recovery-details">
         Anything else Airtur should know?
       </label>
+
       <textarea
         id="recovery-details"
         className="recovery-textarea"
         value={details}
+        disabled={loading}
         onChange={(e) => setDetails(e.target.value)}
         placeholder={
           action === "wait"
@@ -222,14 +254,29 @@ export default function RecoveryActions({
               Number(hours) > 24))
         }
         onClick={generatePlan}
+        aria-busy={loading}
       >
         {loading ? (
-          <Loader2 size={18} className="spin" />
+          <Loader2 size={18} className="animate-spin" />
+        ) : error ? (
+          <RefreshCw size={18} />
         ) : (
           <Sparkles size={18} />
         )}
-        {loading ? "Preparing your plan..." : "Create my action plan"}
+
+        {loading
+          ? "Preparing your plan..."
+          : error
+            ? "Retry action plan"
+            : "Create my action plan"}
       </button>
+
+      {loading && (
+        <p role="status" className="mt-3 text-sm text-(--muted)">
+          Meta AI is preparing your personalized guidance. This may take a
+          moment.
+        </p>
+      )}
 
       {error && (
         <p className="error-message" role="alert">
@@ -241,22 +288,20 @@ export default function RecoveryActions({
         <div className="response-card">
           {facts && (
             <div className="mb-5 rounded-xl border border-(--border) bg-(--surface) p-4 text-xs leading-6">
-              <p className="font-bold text-[#36c3c5]">Confirmed by the data</p>
-              <p className="mt-1 text-(--muted)">
-                {facts.dataSource === "live-provider"
-                  ? "Live provider record"
-                  : "Simulated scenario"}
-                {" · "}Status: {facts.status ?? "Unknown"}
-                {" · "}Delay: {facts.delayText ?? "Unknown"}
-                {facts.retrievedAt
-                  ? ` · Retrieved ${new Date(
-                      facts.retrievedAt,
-                    ).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}`
-                  : ""}
+              <p className="font-bold text-[#36c3c5]">
+                Flight information supplied to AI
               </p>
+
+              <p className="mt-1 text-(--muted)">
+                {facts.dataSource === "client-supplied-provider-data"
+                  ? "Third-party provider record"
+                  : "Demo or unverified information"}
+                {" · Status: "}
+                {facts.status ?? "Unknown"}
+                {" · Delay: "}
+                {facts.delayText ?? "Unknown"}
+              </p>
+
               <p className="mt-2 font-bold text-(--muted)">
                 Everything below is an AI suggestion to verify.
               </p>
@@ -270,7 +315,9 @@ export default function RecoveryActions({
               {copied ? "Copied" : "Copy"}
             </button>
           </div>
+
           <div className="response-text">{result}</div>
+
           <p className="response-note">
             AI-generated guidance. Verify schedules, airport amenities,
             availability, and airline policies.

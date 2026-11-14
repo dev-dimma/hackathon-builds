@@ -1,955 +1,616 @@
-"use client";
-
-import { useEffect, useState } from "react";
-import type { FormEvent } from "react";
+import Link from "next/link";
+import { Bricolage_Grotesque } from "next/font/google";
 import {
   ArrowRight,
+  BellRing,
+  Briefcase,
   CheckCircle2,
+  ChevronDown,
   Clock3,
-  Copy,
-  LayoutDashboard,
-  Loader2,
-  Menu,
+  Coffee,
+  Compass,
+  MapPinned,
   Plane,
-  RadioTower,
-  Route,
+  PlaneTakeoff,
+  RefreshCw,
   ShieldCheck,
   Sparkles,
-  TriangleAlert,
-  X,
+  Wallet,
 } from "lucide-react";
-import LiveFlightSearch, {
-  type LiveFlight,
-  type FlightVerification,
-} from "./components/live-flight-search";
-import RecoveryActions from "./components/recovery-actions";
-import ThemeToggle from "./theme-toggle";
 
-type FlightStatus =
-  | "Delayed"
-  | "Cancelled"
-  | "On time"
-  | "Unknown"
-  | "Scheduled"
-  | "Rescheduled"
-  | "Departed"
-  | "Landed"
-  | "Disputed";
+const display = Bricolage_Grotesque({
+  subsets: ["latin"],
+  weight: ["500", "700", "800"],
+});
 
-type Flight = {
-  airline: string;
-  number: string;
-  from: string;
-  to: string;
-  date: string;
-  scheduled: string;
-  updated: string;
-  status: FlightStatus;
-  reason: string;
-  dataSource?: "aviationstack" | "demo";
-  verifiedAt?: string;
-  retrievedAt?: string;
-  providerStatus?: string;
-  delayMinutes?: number | null;
-  terminal?: string | null;
-  gate?: string | null;
-  arrivalScheduled?: string;
-  arrivalEstimated?: string;
-  verification?: FlightVerification;
-};
-
-type CopilotFacts = {
-  dataSource?: string;
-  status?: string;
-  delayText?: string;
-  retrievedAt?: string;
-  independentlyVerifiedByCopilot?: boolean;
-};
-
-const scenarios: Record<string, Flight> = {
-  delayed: {
-    airline: "Demo Airways",
-    number: "DM 7120",
-    from: "Lagos (LOS)",
-    to: "Owerri (QOW)",
-    date: "2026-11-04",
-    scheduled: "12:00 PM",
-    updated: "5:30 PM",
-    status: "Delayed",
-    reason: "Cause not provided in this scenario.",
-    dataSource: "demo",
-    delayMinutes: 330,
+const steps = [
+  {
+    title: "Find your flight",
+    description:
+      "Search supported flight data, or pick a demonstration scenario to try it out.",
   },
-  cancelled: {
-    airline: "Demo Airways",
-    number: "DM 204",
-    from: "Lagos (LOS)",
-    to: "Abuja (ABV)",
-    date: "2026-11-04",
-    scheduled: "2:00 PM",
-    updated: "Not available",
-    status: "Cancelled",
-    reason: "Cancellation reason not provided.",
-    dataSource: "demo",
-    delayMinutes: null,
+  {
+    title: "Tell Airtur what matters",
+    description:
+      "Share your arrival deadline, your budget, and what you can't compromise on.",
   },
-  ontime: {
-    airline: "Demo Airways",
-    number: "DM 108",
-    from: "Abuja (ABV)",
-    to: "Lagos (LOS)",
-    date: "2026-11-04",
-    scheduled: "9:00 AM",
-    updated: "9:00 AM",
-    status: "On time",
-    reason: "No disruption in this demonstration scenario.",
-    dataSource: "demo",
-    delayMinutes: 0,
+  {
+    title: "Choose your next move",
+    description:
+      "Get an AI-assisted plan, then decide what to explore: wait, rebook, or replan.",
   },
-};
+];
 
-function getDelayMinutes(flight: Flight): number | null {
-  if (typeof flight.delayMinutes === "number") {
-    return Number.isFinite(flight.delayMinutes) ? flight.delayMinutes : null;
-  }
-  return null;
-}
+const faqs = [
+  {
+    q: "Does Airtur rebook my flight?",
+    a: "No. Airtur explains your situation and the options worth investigating. Any change to your booking is made with your airline.",
+  },
+  {
+    q: "Is the flight information live?",
+    a: "Airtur uses supported flight data where available. The example on this page is an illustration and does not imply live availability.",
+  },
+  {
+    q: "Do I need an account?",
+    a: "No. You can try Airtur without signing in.",
+  },
+  {
+    q: "What powers the guidance?",
+    a: "Personalized recommendations are generated with Meta AI, based on the deadline, budget, and priorities you share.",
+  },
+];
 
-function formatDelay(minutes: number | null) {
-  if (minutes === null) return "Not available";
-  const hours = Math.floor(minutes / 60);
-  const remaining = minutes % 60;
-  return `${hours}h ${remaining}m`;
-}
+const options = [
+  {
+    label: "Wait it out",
+    note: "Departs 21:40. Arrives 1h 10m past your deadline.",
+    tone: "text-amber-300",
+  },
+  {
+    label: "Investigate rebooking",
+    note: "Ask about earlier departures on the same route.",
+    tone: "text-[#85e5dc]",
+  },
+  {
+    label: "Replan the connection",
+    note: "Check whether your onward trip still works.",
+    tone: "text-[#85e5dc]",
+  },
+];
 
-function getStatusColor(status: FlightStatus) {
-  if (status === "Delayed" || status === "Rescheduled") {
-    return "text-amber-300 bg-amber-500/15";
-  }
-  if (status === "Cancelled" || status === "Disputed") {
-    return "text-red-300 bg-red-500/15";
-  }
-  if (status === "On time" || status === "Landed") {
-    return "text-emerald-300 bg-emerald-500/15";
-  }
-  return "text-sky-300 bg-sky-500/15";
-}
-
-async function readApiResponse(
-  response: Response,
-): Promise<{ advice: string; facts?: CopilotFacts }> {
-  const text = await response.text();
-
-  if (!text.trim()) {
-    throw new Error(
-      `Server returned an empty response (HTTP ${response.status}).`,
-    );
-  }
-
-  let data: {
-    advice?: string;
-    error?: string;
-    facts?: CopilotFacts;
-  };
-
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error(
-      `Server returned an invalid response (HTTP ${response.status}).`,
-    );
-  }
-
-  if (!response.ok) {
-    throw new Error(data.error || `Request failed (HTTP ${response.status}).`);
-  }
-
-  if (typeof data.advice !== "string" || !data.advice.trim()) {
-    throw new Error("No AI guidance was returned.");
-  }
-
-  return {
-    advice: data.advice,
-    facts: data.facts,
-  };
-}
-
-export default function Home() {
-  const [scenario, setScenario] = useState("delayed");
-  const [demoLoading, setDemoLoading] = useState(false);
-  const [demoNotice, setDemoNotice] = useState("");
-  const [flight, setFlight] = useState<Flight>(scenarios.delayed);
-
-  const [deadline, setDeadline] = useState("");
-  const [budget, setBudget] = useState("");
-  const [priority, setPriority] = useState("Arrive as early as possible");
-
-  const [advice, setAdvice] = useState("");
-  const [facts, setFacts] = useState<CopilotFacts | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [activeId, setActiveId] = useState("overview");
-
-  useEffect(() => {
-    const ids = ["overview", "flight-monitor", "ai-copilot", "recovery-center"];
-
-    function updateActive() {
-      let current = "overview";
-
-      for (const id of ids) {
-        const element = document.getElementById(id);
-
-        if (element && element.getBoundingClientRect().top <= 160) {
-          current = id;
-        }
-      }
-
-      setActiveId(current);
-    }
-
-    updateActive();
-
-    window.addEventListener("scroll", updateActive, {
-      passive: true,
-    });
-
-    return () => {
-      window.removeEventListener("scroll", updateActive);
-    };
-  }, []);
-
-  const delayMinutes = getDelayMinutes(flight);
-
-  const flightForAi: Flight = {
-    ...flight,
-    delayMinutes,
-  };
-
-  function clearAdvice() {
-    setAdvice("");
-    setFacts(null);
-    setError("");
-    setCopied(false);
-  }
-
-  async function loadScenario(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    if (demoLoading) return;
-
-    setDemoLoading(true);
-    setDemoNotice("");
-
-    try {
-      await new Promise<void>((resolve) => {
-        window.setTimeout(resolve, 450);
-      });
-
-      const selected = scenarios[scenario];
-
-      if (!selected) {
-        throw new Error("Invalid demo scenario.");
-      }
-
-      setFlight({ ...selected });
-      clearAdvice();
-
-      const names: Record<string, string> = {
-        delayed: "Delayed flight",
-        cancelled: "Cancelled flight",
-        ontime: "On-time flight",
-      };
-
-      setDemoNotice(
-        `${names[scenario]} loaded successfully. Your flight monitor and recovery tools are updated.`,
-      );
-
-      document.getElementById("flight-monitor")?.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-      });
-    } catch {
-      setDemoNotice("Unable to load the demonstration. Please try again.");
-    } finally {
-      setDemoLoading(false);
-    }
-  }
-
-  function handleLiveFlight(found: LiveFlight) {
-    const validStatuses: FlightStatus[] = [
-      "Delayed",
-      "Cancelled",
-      "On time",
-      "Unknown",
-      "Scheduled",
-      "Rescheduled",
-      "Departed",
-      "Landed",
-      "Disputed",
-    ];
-
-    const status: FlightStatus = validStatuses.includes(
-      found.status as FlightStatus,
-    )
-      ? (found.status as FlightStatus)
-      : "Unknown";
-
-    setFlight({
-      ...found,
-      status,
-      dataSource: "aviationstack",
-    });
-
-    clearAdvice();
-    setDemoNotice("");
-
-    document.getElementById("flight-monitor")?.scrollIntoView({
-      behavior: "smooth",
-      block: "start",
-    });
-  }
-
-  async function generateAdvice() {
-    if (loading) return;
-
-    setLoading(true);
-    clearAdvice();
-
-    try {
-      const response = await fetch("/api/copilot", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          flight: flightForAi,
-          action: "assess",
-          deadline,
-          budget,
-          priority,
-        }),
-      });
-
-      const result = await readApiResponse(response);
-
-      setAdvice(result.advice);
-      setFacts(result.facts ?? null);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Unable to generate your plan.",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function copyAdvice() {
-    try {
-      await navigator.clipboard.writeText(advice);
-      setCopied(true);
-    } catch {
-      setError("Unable to copy the plan automatically.");
-    }
-  }
-
-  const navItems = [
-    {
-      id: "overview",
-      label: "Overview",
-      Icon: LayoutDashboard,
-    },
-    {
-      id: "flight-monitor",
-      label: "Flight Monitor",
-      Icon: RadioTower,
-    },
-    {
-      id: "ai-copilot",
-      label: "AI Copilot",
-      Icon: Sparkles,
-    },
-    {
-      id: "recovery-center",
-      label: "Recovery Center",
-      Icon: Route,
-    },
-  ];
-
-  function navigateTo(id: string) {
-    setActiveId(id);
-    setSidebarOpen(false);
-
-    document.getElementById(id)?.scrollIntoView({
-      behavior: "smooth",
-      block: "start",
-    });
-  }
-
+export default function LandingPage() {
   return (
-    <div className="min-h-screen bg-(--bg) text-(--text)">
-      {sidebarOpen && (
-        <button
-          type="button"
-          aria-label="Close navigation"
-          className="fixed inset-0 z-40 bg-black/60 lg:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
+    <div className="min-h-screen bg-[#f4f8f9] text-[#0d2638] antialiased">
+      {/* NAV */}
+      <header className="sticky top-0 z-40 border-b border-white/10 bg-[#0a2133]/85 backdrop-blur-md">
+        <nav className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-4 md:px-10">
+          <Link
+            href="/landing"
+            className={`${display.className} flex items-center gap-2 text-2xl font-extrabold tracking-tight text-white`}
+          >
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-linear-to-br from-[#12a5b3] to-[#087f8c] shadow-lg shadow-[#087f8c]/40">
+              <Plane size={20} />
+            </span>
+            airtur<span className="text-[#79e0d7]">.</span>
+          </Link>
 
-      <aside
-        className={`fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-(--border) bg-(--surface) transition-transform lg:translate-x-0 ${
-          sidebarOpen ? "translate-x-0" : "-translate-x-full"
-        }`}
-      >
-        <div className="flex h-20 items-center justify-between border-b border-(--border) px-6">
-          <div className="flex items-center gap-3">
-            <div className="rounded-xl bg-teal-600 p-2.5 text-white">
-              <Plane size={22} />
-            </div>
-
-            <div className="text-2xl font-bold tracking-tight">
-              airtur
-              <span className="text-teal-400">.</span>
-            </div>
+          <div className="hidden items-center gap-8 text-sm font-medium text-[#c6dde3] md:flex">
+            <a href="#features" className="transition hover:text-white">
+              Features
+            </a>
+            <a href="#how-it-works" className="transition hover:text-white">
+              How it works
+            </a>
+            <a href="#faq" className="transition hover:text-white">
+              FAQ
+            </a>
           </div>
 
-          <button
-            type="button"
-            className="lg:hidden"
-            aria-label="Close menu"
-            onClick={() => setSidebarOpen(false)}
+          <Link
+            href="/dashboard"
+            className="inline-flex items-center gap-2 rounded-xl bg-[#79e0d7] px-4 py-2.5 text-sm font-bold text-[#0a2133] transition hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
           >
-            <X size={20} />
-          </button>
-        </div>
+            Launch app
+            <ArrowRight size={16} />
+          </Link>
+        </nav>
+      </header>
 
-        <div className="px-5 pt-8">
-          <p className="mb-5 px-2 text-xs font-bold tracking-widest text-sky-300">
-            WORKSPACE
-          </p>
+      <main>
+        {/* HERO */}
+        <section className="relative overflow-hidden bg-[#0a2133] px-5 pb-24 pt-16 text-white md:px-10 md:pb-32 md:pt-24">
+          {/* layered backdrop */}
+          <div className="pointer-events-none absolute -left-40 top-20 h-130 w-130 rounded-full bg-[#087f8c]/30 blur-[120px]" />
+          <div className="pointer-events-none absolute -right-32 -top-32 h-115 w-115 rounded-full bg-[#79e0d7]/15 blur-[110px]" />
+          <div
+            className="pointer-events-none absolute inset-0 opacity-[0.07]"
+            style={{
+              backgroundImage:
+                "linear-gradient(#fff 1px, transparent 1px), linear-gradient(90deg, #fff 1px, transparent 1px)",
+              backgroundSize: "56px 56px",
+              maskImage:
+                "radial-gradient(ellipse at 30% 30%, black 20%, transparent 70%)",
+              WebkitMaskImage:
+                "radial-gradient(ellipse at 30% 30%, black 20%, transparent 70%)",
+            }}
+          />
 
-          <nav className="space-y-2">
-            {navItems.map(({ id, label, Icon }) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => navigateTo(id)}
-                aria-current={activeId === id ? "page" : undefined}
-                className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-semibold transition-colors ${
-                  activeId === id
-                    ? "bg-teal-700/20 text-white"
-                    : "text-(--text) hover:bg-teal-700/10"
-                }`}
+          <div className="relative mx-auto grid max-w-7xl items-center gap-14 lg:grid-cols-[1.05fr_0.95fr]">
+            <div>
+              <div className="mb-7 inline-flex items-center gap-2 rounded-full border border-[#79e0d7]/30 bg-[#79e0d7]/10 px-4 py-2 text-sm font-semibold text-[#9aeee6]">
+                <Sparkles size={15} />
+                AI flight disruption copilot, powered by Meta AI
+              </div>
+
+              <h1
+                className={`${display.className} text-5xl font-extrabold leading-[1.05] tracking-tight md:text-7xl`}
               >
-                <Icon size={19} />
-                {label}
-              </button>
+                <span className="bg-linear-to-b from-white to-[#b9d6dd] bg-clip-text text-transparent">
+                  Flight delayed?
+                </span>
+                <span className="mt-2 block bg-linear-to-r from-[#79e0d7] via-[#5fd0e0] to-[#9fe8c7] bg-clip-text text-transparent">
+                  Know your next move.
+                </span>
+              </h1>
+
+              <p className="mt-7 max-w-xl text-base leading-8 text-[#c9dfe5] md:text-lg">
+                Delays and cancellations are stressful. Airtur helps you
+                understand what happened, compare your options, and decide with
+                confidence.
+              </p>
+
+              <div className="mt-10 flex flex-wrap items-center gap-4">
+                <Link
+                  href="/dashboard"
+                  className="group inline-flex items-center gap-3 rounded-xl bg-[#79e0d7] px-7 py-4 font-bold text-[#0a2133] shadow-lg shadow-[#79e0d7]/20 transition hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                >
+                  Try Airtur free
+                  <ArrowRight
+                    size={19}
+                    className="transition group-hover:translate-x-1"
+                  />
+                </Link>
+                <a
+                  href="#how-it-works"
+                  className="inline-flex items-center gap-2 rounded-xl border border-white/25 px-7 py-4 font-semibold transition hover:bg-white/10"
+                >
+                  See how it works
+                </a>
+              </div>
+
+              <ul className="mt-10 flex flex-wrap gap-x-7 gap-y-3 text-sm text-[#c6e7e7]">
+                {[
+                  "Personalized guidance",
+                  "Recovery planning",
+                  "No sign-in required to try",
+                ].map((t) => (
+                  <li key={t} className="flex items-center gap-2">
+                    <CheckCircle2 size={17} className="text-[#79e0d7]" />
+                    {t}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {/* departure board mock: the memorable moment */}
+            <div className="relative">
+              <div className="absolute -inset-4 rounded-4xl bg-linear-to-br from-[#79e0d7]/20 to-transparent blur-2xl" />
+              <div className="relative rounded-3xl border border-white/15 bg-white/6 p-5 shadow-2xl backdrop-blur-xl md:p-7">
+                <div className="flex items-center justify-between text-xs text-[#a9c9d2]">
+                  <span className="flex items-center gap-2 font-semibold text-[#c6dde3]">
+                    <PlaneTakeoff size={16} /> Departure
+                  </span>
+                  <span className="flex items-center gap-2 rounded-full bg-amber-400/15 px-3 py-1 font-bold text-amber-300">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-amber-300" />
+                    Delayed 6h
+                  </span>
+                </div>
+
+                <div className="mt-6 flex items-center justify-between">
+                  <div>
+                    <p
+                      className={`${display.className} text-4xl font-extrabold md:text-5xl`}
+                    >
+                      LOS
+                    </p>
+                    <p className="mt-1 text-xs text-[#a9c9d2]">Lagos</p>
+                  </div>
+                  <div className="mx-4 flex flex-1 items-center gap-2 text-[#79e0d7]">
+                    <span className="h-px flex-1 border-t border-dashed border-white/30" />
+                    <Plane size={20} className="rotate-45" />
+                    <span className="h-px flex-1 border-t border-dashed border-white/30" />
+                  </div>
+                  <div className="text-right">
+                    <p
+                      className={`${display.className} text-4xl font-extrabold md:text-5xl`}
+                    >
+                      LHR
+                    </p>
+                    <p className="mt-1 text-xs text-[#a9c9d2]">London</p>
+                  </div>
+                </div>
+
+                <div className="mt-6 grid grid-cols-3 gap-3 text-center text-xs">
+                  <div className="rounded-xl bg-white/8 p-3">
+                    <p className="text-[#a9c9d2]">Scheduled</p>
+                    <p className="mt-1 text-sm font-bold line-through decoration-amber-300/70">
+                      15:40
+                    </p>
+                  </div>
+                  <div className="rounded-xl bg-amber-400/10 p-3">
+                    <p className="text-amber-200/80">Now</p>
+                    <p className="mt-1 text-sm font-bold text-amber-300">
+                      21:40
+                    </p>
+                  </div>
+                  <div className="rounded-xl bg-white/8 p-3">
+                    <p className="text-[#a9c9d2]">Your deadline</p>
+                    <p className="mt-1 text-sm font-bold">Tomorrow 09:00</p>
+                  </div>
+                </div>
+
+                <div className="mt-5 rounded-2xl border border-[#79e0d7]/25 bg-[#0a2133]/70 p-4">
+                  <p className="flex items-center gap-2 text-sm font-bold text-[#9aeee6]">
+                    <Sparkles size={16} /> Airtur suggests exploring
+                  </p>
+                  <ul className="mt-3 space-y-3">
+                    {options.map((o) => (
+                      <li key={o.label} className="flex gap-3 text-sm">
+                        <CheckCircle2
+                          size={17}
+                          className={`mt-0.5 shrink-0 ${o.tone}`}
+                        />
+                        <span>
+                          <span className="font-semibold">{o.label}</span>
+                          <span className="block text-xs leading-5 text-[#a9c9d2]">
+                            {o.note}
+                          </span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+              <p className="mt-3 text-center text-xs text-[#8fb0ba]">
+                Illustrative scenario. No live flight or booking availability is
+                implied.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        {/* WHAT IT TAKES INTO ACCOUNT */}
+        <section className="border-b border-[#e1e9ed] bg-white">
+          <div className="mx-auto grid max-w-7xl gap-6 px-5 py-10 md:grid-cols-3 md:px-10">
+            {[
+              {
+                icon: Clock3,
+                t: "Your deadline",
+                d: "Plans are built around when you actually need to arrive.",
+              },
+              {
+                icon: Wallet,
+                t: "Your budget",
+                d: "Options are weighed against what you're willing to spend.",
+              },
+              {
+                icon: Briefcase,
+                t: "Your priorities",
+                d: "Meetings, connections, comfort: you decide what matters.",
+              },
+            ].map(({ icon: Icon, t, d }) => (
+              <div key={t} className="flex items-start gap-4">
+                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#e3f5f4] text-[#087f8c]">
+                  <Icon size={21} />
+                </span>
+                <div>
+                  <p className="font-bold">{t}</p>
+                  <p className="mt-1 text-sm leading-6 text-[#5a7183]">{d}</p>
+                </div>
+              </div>
             ))}
-          </nav>
-        </div>
+          </div>
+        </section>
 
-        <div className="mt-auto p-5">
-          <div className="rounded-2xl border border-(--border) p-4">
-            <ShieldCheck size={20} className="mb-3 text-teal-400" />
-
-            <h3 className="text-sm font-semibold">Travel smarter</h3>
-
-            <p className="mt-2 text-xs leading-6 text-(--muted)">
-              Built with Meta AI. Flight information, prices, and airline
-              policies must be independently verified.
+        {/* FEATURES: bento, mixed sizes */}
+        <section
+          id="features"
+          className="mx-auto max-w-7xl px-5 py-20 md:px-10 md:py-28"
+        >
+          <div className="mb-14 max-w-2xl">
+            <h2
+              className={`${display.className} text-3xl font-extrabold tracking-tight md:text-5xl`}
+            >
+              When travel plans change, you need a plan.
+            </h2>
+            <p className="mt-5 leading-8 text-[#5a7183]">
+              Airtur brings flight information, personalized recommendations,
+              and practical recovery planning into one experience.
             </p>
           </div>
-        </div>
-      </aside>
 
-      <div className="lg:pl-64">
-        <header className="sticky top-0 z-30 flex h-20 items-center justify-between border-b border-(--border) bg-(--surface) px-5 md:px-9">
-          <div className="flex items-center gap-4">
-            <button
-              type="button"
-              aria-label="Open navigation"
-              className="lg:hidden"
-              onClick={() => setSidebarOpen(true)}
-            >
-              <Menu size={22} />
-            </button>
-
-            <div>
-              <h1 className="text-sm font-bold">Travel command center</h1>
-
-              <p className="text-xs text-(--muted)">
-                Your journey, back on track.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <span className="hidden rounded-full bg-teal-600/10 px-4 py-2 text-xs font-semibold text-teal-400 sm:inline-flex">
-              Demo-enabled MVP
-            </span>
-
-            <ThemeToggle />
-          </div>
-        </header>
-
-        <main className="mx-auto max-w-6xl space-y-12 px-5 py-8 md:px-9">
-          <section id="overview" className="scroll-mt-28 space-y-6">
-            <div>
-              <p className="text-xs font-bold tracking-widest text-teal-400">
-                OVERVIEW
-              </p>
-
-              <h2 className="mt-2 text-3xl font-bold">
-                Flight disrupted?
-                <br />
-                Know your next move.
-              </h2>
-
-              <p className="mt-3 max-w-2xl text-sm leading-7 text-(--muted)">
-                Airtur helps you understand flight disruptions and plan your
-                next steps with AI-powered guidance.
-              </p>
-            </div>
-
-            <div className="rounded-2xl border border-(--border) bg-(--surface) p-5">
-              <div className="flex items-start gap-3">
-                <TriangleAlert
-                  size={20}
-                  className="mt-1 shrink-0 text-amber-400"
-                />
-
-                <p className="text-sm leading-7 text-(--muted)">
-                  Airtur currently retrieves flight information from
-                  Aviationstack. An API record is not proof that a flight will
-                  operate as scheduled. Confirm critical decisions with the
-                  operating airline.
-                </p>
-              </div>
-            </div>
-
-            <form
-              onSubmit={loadScenario}
-              className="rounded-2xl border border-(--border) bg-(--surface) p-6"
-            >
-              <div className="mb-6 flex items-start gap-4">
-                <div className="rounded-xl bg-teal-600/15 p-3 text-teal-400">
-                  <Plane size={22} />
-                </div>
-
-                <div>
-                  <h3 className="text-lg font-bold">Try a demonstration</h3>
-
-                  <p className="mt-1 text-sm text-(--muted)">
-                    Explore Airtur using a sample scenario.
-                  </p>
-                </div>
-              </div>
-
-              <label
-                htmlFor="demo-scenario"
-                className="mb-2 block text-sm font-semibold"
+          <div className="grid gap-5 md:grid-cols-6">
+            {/* large */}
+            <article className="relative overflow-hidden rounded-3xl bg-linear-to-br from-[#0a2133] to-[#12405a] p-8 text-white md:col-span-4 md:p-10">
+              <div className="absolute -right-16 -top-16 h-64 w-64 rounded-full bg-[#79e0d7]/15 blur-3xl" />
+              <span className="relative flex h-12 w-12 items-center justify-center rounded-xl bg-white/10 text-[#79e0d7]">
+                <BellRing size={24} />
+              </span>
+              <h3
+                className={`${display.className} relative mt-6 text-2xl font-bold md:text-3xl`}
               >
-                Select a scenario
-              </label>
-
-              <select
-                id="demo-scenario"
-                value={scenario}
-                onChange={(event) => setScenario(event.target.value)}
-                disabled={demoLoading}
-                className="w-full rounded-xl border border-(--border) bg-(--bg) px-4 py-4 text-sm"
-              >
-                <option value="delayed">Delayed flight</option>
-                <option value="cancelled">Cancelled flight</option>
-                <option value="ontime">On-time flight</option>
-              </select>
-
-              <button
-                type="submit"
-                disabled={demoLoading}
-                aria-busy={demoLoading}
-                className="mt-5 flex w-full items-center justify-center gap-3 rounded-xl bg-teal-700 px-5 py-4 text-sm font-bold text-white transition hover:bg-teal-600 disabled:cursor-wait disabled:opacity-70"
-              >
-                {demoLoading ? (
-                  <>
-                    <Loader2
-                      size={18}
-                      className="animate-spin"
-                      aria-hidden="true"
-                    />
-                    Loading scenario...
-                  </>
-                ) : (
-                  <>
-                    Load demo scenario
-                    <ArrowRight size={18} />
-                  </>
-                )}
-              </button>
-
-              {demoNotice && (
-                <p
-                  role="status"
-                  aria-live="polite"
-                  className="mt-4 flex items-start gap-2 rounded-lg bg-teal-600/10 p-3 text-sm text-teal-400"
-                >
-                  <CheckCircle2 size={18} className="shrink-0" />
-                  {demoNotice}
-                </p>
-              )}
-
-              <p className="mt-4 text-center text-xs text-(--muted)">
-                Fictional demonstration data. Not live flight tracking.
+                Understand the disruption
+              </h3>
+              <p className="relative mt-3 max-w-lg text-[#c9dfe5]">
+                Check supported flight information and see what a delay or
+                cancellation actually means for your journey, in plain language.
               </p>
-            </form>
-          </section>
-
-          <section id="flight-monitor" className="scroll-mt-28 space-y-6">
-            <div>
-              <p className="text-xs font-bold tracking-widest text-teal-400">
-                FLIGHT MONITOR
-              </p>
-
-              <h2 className="mt-2 text-2xl font-bold">Track your flight</h2>
-
-              <p className="mt-2 text-sm text-(--muted)">
-                Search for a flight or explore the selected demonstration
-                scenario.
-              </p>
-            </div>
-
-            <LiveFlightSearch onFlightFound={handleLiveFlight} />
-
-            <div className="rounded-2xl border border-(--border) bg-(--surface) p-6">
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div>
-                  <p className="text-xs font-bold tracking-widest text-teal-400">
-                    CURRENT FLIGHT
-                  </p>
-
-                  <h3 className="mt-3 text-xl font-bold">
-                    {flight.airline} · {flight.number}
-                  </h3>
-
-                  <p className="mt-2 text-sm text-(--muted)">
-                    {flight.from} to {flight.to}
-                  </p>
-                </div>
-
-                <span
-                  className={`rounded-full px-4 py-2 text-xs font-bold ${getStatusColor(
-                    flight.status,
-                  )}`}
-                >
-                  {flight.status}
-                </span>
-              </div>
-
-              <div className="mt-6 grid gap-4 border-t border-(--border) pt-6 sm:grid-cols-2 lg:grid-cols-4">
-                {[
-                  {
-                    label: "Flight date",
-                    value: flight.date,
-                  },
-                  {
-                    label: "Scheduled departure",
-                    value: flight.scheduled,
-                  },
-                  {
-                    label: "Reported departure",
-                    value: flight.updated,
-                  },
-                  {
-                    label: "Reported delay",
-                    value: formatDelay(delayMinutes),
-                  },
-                ].map((item) => (
-                  <div key={item.label}>
-                    <p className="text-xs text-(--muted)">{item.label}</p>
-
-                    <p className="mt-2 text-sm font-bold">{item.value}</p>
-                  </div>
+              <div className="relative mt-8 flex flex-wrap gap-3 text-xs font-semibold">
+                {["Delay", "Cancellation", "Missed connection"].map((t) => (
+                  <span
+                    key={t}
+                    className="rounded-full border border-white/20 bg-white/8 px-4 py-2"
+                  >
+                    {t}
+                  </span>
                 ))}
               </div>
+            </article>
 
-              {flight.reason && (
-                <div className="mt-6 rounded-xl bg-(--bg) p-4">
-                  <p className="text-xs font-bold">Reported reason</p>
+            {/* small */}
+            <article className="rounded-3xl border border-[#d9e6ea] bg-white p-8 shadow-sm md:col-span-2">
+              <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#e3f5f4] text-[#087f8c]">
+                <Sparkles size={24} />
+              </span>
+              <h3 className={`${display.className} mt-6 text-xl font-bold`}>
+                Personalized AI guidance
+              </h3>
+              <p className="mt-3 text-sm leading-7 text-[#5a7183]">
+                Share your deadline, budget, and priorities. Get practical next
+                steps powered by Meta AI.
+              </p>
+            </article>
 
-                  <p className="mt-2 text-sm text-(--muted)">{flight.reason}</p>
-                </div>
-              )}
+            <article className="rounded-3xl border border-[#d9e6ea] bg-white p-8 shadow-sm md:col-span-2">
+              <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#e3f5f4] text-[#087f8c]">
+                <RefreshCw size={24} />
+              </span>
+              <h3 className={`${display.className} mt-6 text-xl font-bold`}>
+                Explore recovery options
+              </h3>
+              <p className="mt-3 text-sm leading-7 text-[#5a7183]">
+                Compare the decisions worth investigating: waiting, rebooking,
+                and changing your plans.
+              </p>
+            </article>
 
-              <div className="mt-6 rounded-xl border border-(--border) p-4">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck size={18} className="text-teal-400" />
-
-                  <h4 className="text-sm font-bold">
-                    Flight information reliability
-                  </h4>
-                </div>
-
-                {flight.dataSource === "demo" ? (
-                  <p className="mt-3 text-sm leading-6 text-(--muted)">
-                    Demonstration scenario. No real flight sources were queried.
+            {/* large, with mini itinerary */}
+            <article className="rounded-3xl border border-[#d9e6ea] bg-linear-to-br from-white to-[#e9f6f5] p-8 shadow-sm md:col-span-4 md:p-10">
+              <div className="grid items-center gap-8 md:grid-cols-2">
+                <div>
+                  <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#087f8c] text-white">
+                    <Compass size={24} />
+                  </span>
+                  <h3
+                    className={`${display.className} mt-6 text-2xl font-bold`}
+                  >
+                    Make waiting time useful
+                  </h3>
+                  <p className="mt-3 text-sm leading-7 text-[#5a7183]">
+                    Get a suggested airport itinerary based on how much time you
+                    have and what you like.
                   </p>
-                ) : (
-                  <>
-                    <p className="mt-3 text-sm leading-6 text-(--muted)">
-                      Provider: Aviationstack. This information has not been
-                      independently confirmed with the operating airline.
-                    </p>
+                </div>
 
-                    {flight.retrievedAt && (
-                      <p className="mt-2 text-xs text-(--muted)">
-                        Retrieved: {flight.retrievedAt}
-                      </p>
-                    )}
-
-                    {flight.verification?.message && (
-                      <p className="mt-3 text-sm leading-6 text-(--muted)">
-                        {flight.verification.message}
-                      </p>
-                    )}
-
-                    {flight.verification?.reports?.map((report, index) => (
-                      <div
-                        key={`${report.provider}-${index}`}
-                        className="mt-3 rounded-lg bg-(--bg) p-3"
-                      >
-                        <p className="text-sm font-semibold">
-                          {report.provider}
-                        </p>
-
-                        <p className="mt-1 text-xs text-(--muted)">
-                          Reported status: {report.status}
-                        </p>
-
-                        {report.retrievedAt && (
-                          <p className="mt-1 text-xs text-(--muted)">
-                            Retrieved: {report.retrievedAt}
-                          </p>
-                        )}
-                      </div>
-                    ))}
-                  </>
-                )}
+                <ol className="relative space-y-4 border-l-2 border-dashed border-[#087f8c]/30 pl-6 text-sm">
+                  {[
+                    {
+                      icon: Coffee,
+                      t: "Settle in with a proper meal",
+                      m: "Sample · 45 min",
+                    },
+                    {
+                      icon: MapPinned,
+                      t: "Walk the terminal and stretch",
+                      m: "Sample · 30 min",
+                    },
+                    {
+                      icon: Briefcase,
+                      t: "Catch up on work near a charging spot",
+                      m: "Sample · 90 min",
+                    },
+                  ].map(({ icon: Icon, t, m }) => (
+                    <li
+                      key={t}
+                      className="relative rounded-xl bg-white p-3 shadow-sm"
+                    >
+                      <span className="absolute left-[2.15rem] top-3.5 flex h-6 w-6 items-center justify-center rounded-full bg-[#087f8c] text-white">
+                        <Icon size={13} />
+                      </span>
+                      <p className="font-semibold">{t}</p>
+                      <p className="text-xs text-[#6b8090]">{m}</p>
+                    </li>
+                  ))}
+                </ol>
               </div>
+            </article>
+          </div>
+        </section>
+
+        {/* HOW IT WORKS: a real sequence, so numbers are earned */}
+        <section
+          id="how-it-works"
+          className="bg-[#e6f1f2] px-5 py-20 md:px-10 md:py-28"
+        >
+          <div className="mx-auto max-w-7xl">
+            <div className="mb-14 max-w-2xl">
+              <h2
+                className={`${display.className} text-3xl font-extrabold tracking-tight md:text-5xl`}
+              >
+                Three steps to a clearer decision.
+              </h2>
             </div>
-          </section>
 
-          <section id="ai-copilot" className="scroll-mt-28 space-y-6">
-            <div>
-              <p className="text-xs font-bold tracking-widest text-teal-400">
-                AI COPILOT
-              </p>
-
-              <h2 className="mt-2 text-2xl font-bold">Find your next move</h2>
-
-              <p className="mt-2 text-sm text-(--muted)">
-                Tell Airtur what matters most to you and get a personalized
-                recovery plan powered by Meta AI.
-              </p>
-            </div>
-
-            <div className="grid gap-6 rounded-2xl border border-(--border) bg-(--surface) p-6 lg:grid-cols-2">
-              <div className="space-y-5">
-                <div>
-                  <label
-                    htmlFor="deadline"
-                    className="mb-2 block text-sm font-semibold"
-                  >
-                    When do you need to arrive?
-                  </label>
-
-                  <input
-                    id="deadline"
-                    value={deadline}
-                    onChange={(event) => setDeadline(event.target.value)}
-                    placeholder="Before 10AM tomorrow"
-                    className="w-full rounded-xl border border-(--border) bg-(--bg) px-4 py-4 text-sm"
-                  />
-                </div>
-
-                <div>
-                  <label
-                    htmlFor="budget"
-                    className="mb-2 block text-sm font-semibold"
-                  >
-                    Budget for alternatives
-                  </label>
-
-                  <input
-                    id="budget"
-                    value={budget}
-                    onChange={(event) => setBudget(event.target.value)}
-                    placeholder="100,000 NGN"
-                    className="w-full rounded-xl border border-(--border) bg-(--bg) px-4 py-4 text-sm"
-                  />
-                </div>
-
-                <div>
-                  <label
-                    htmlFor="priority"
-                    className="mb-2 block text-sm font-semibold"
-                  >
-                    What matters most?
-                  </label>
-
-                  <select
-                    id="priority"
-                    value={priority}
-                    onChange={(event) => setPriority(event.target.value)}
-                    className="w-full rounded-xl border border-(--border) bg-(--bg) px-4 py-4 text-sm"
-                  >
-                    <option>Arrive as early as possible</option>
-                    <option>Minimize additional costs</option>
-                    <option>Reduce stress and uncertainty</option>
-                    <option>Find the safest practical option</option>
-                  </select>
-                </div>
-
-                <button
-                  type="button"
-                  disabled={loading}
-                  onClick={generateAdvice}
-                  aria-busy={loading}
-                  className="flex w-full items-center justify-center gap-3 rounded-xl bg-teal-700 px-5 py-4 text-sm font-bold text-white transition hover:bg-teal-600 disabled:opacity-70"
+            <div className="relative grid gap-6 md:grid-cols-3">
+              <div className="pointer-events-none absolute left-[16%] right-[16%] top-8 hidden border-t-2 border-dashed border-[#087f8c]/30 md:block" />
+              {steps.map((step, i) => (
+                <div
+                  key={step.title}
+                  className="relative rounded-3xl border border-[#d3e4e7] bg-white p-8 shadow-sm"
                 >
-                  {loading ? (
-                    <>
-                      <Loader2 size={18} className="animate-spin" />
-                      Preparing your guidance...
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles size={18} />
-                      Find my next move
-                    </>
-                  )}
-                </button>
-
-                {error && (
-                  <p
-                    role="alert"
-                    className="rounded-xl bg-red-500/15 p-4 text-sm text-red-300"
+                  <span
+                    className={`${display.className} flex h-14 w-14 items-center justify-center rounded-2xl bg-linear-to-br from-[#12a5b3] to-[#087f8c] text-2xl font-extrabold text-white shadow-lg shadow-[#087f8c]/30`}
                   >
-                    {error}
+                    {i + 1}
+                  </span>
+                  <h3 className={`${display.className} mt-6 text-xl font-bold`}>
+                    {step.title}
+                  </h3>
+                  <p className="mt-3 text-sm leading-7 text-[#5a7183]">
+                    {step.description}
                   </p>
-                )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* MORE THAN TRACKING */}
+        <section className="mx-auto grid max-w-7xl items-center gap-14 px-5 py-20 md:grid-cols-2 md:px-10 md:py-28">
+          <div>
+            <h2
+              className={`${display.className} text-3xl font-extrabold tracking-tight md:text-5xl`}
+            >
+              Flight tracking tells you what happened. Airtur helps you decide
+              what comes next.
+            </h2>
+            <p className="mt-6 max-w-lg leading-8 text-[#5a7183]">
+              Whether you want to wait at the airport, investigate rebooking,
+              reorganize your itinerary, or contact your airline, Airtur helps
+              you work through the decision.
+            </p>
+            <Link
+              href="/"
+              className="group mt-8 inline-flex items-center gap-2 font-bold text-[#087f8c] hover:underline"
+            >
+              Explore the AI copilot
+              <ArrowRight
+                size={18}
+                className="transition group-hover:translate-x-1"
+              />
+            </Link>
+          </div>
+
+          <div className="rounded-3xl bg-[#0a2133] p-6 text-white shadow-2xl md:p-9">
+            <div className="flex items-center gap-3 border-b border-white/15 pb-6">
+              <div className="rounded-xl bg-[#087f8c] p-3">
+                <Sparkles size={22} />
               </div>
-
-              <div className="min-h-80 rounded-2xl border border-(--border) p-5">
-                {!advice ? (
-                  <div className="flex h-full flex-col items-center justify-center text-center">
-                    {loading ? (
-                      <Loader2
-                        size={32}
-                        className="animate-spin text-teal-400"
-                      />
-                    ) : (
-                      <Sparkles size={32} className="text-teal-400" />
-                    )}
-
-                    <h3 className="mt-5 text-lg font-bold">
-                      {loading
-                        ? "Preparing your recovery plan"
-                        : "Your next move starts here"}
-                    </h3>
-
-                    <p className="mt-3 max-w-xs text-sm leading-7 text-(--muted)">
-                      {loading
-                        ? "Meta AI is reviewing your travel priorities."
-                        : "Share your travel priorities and Airtur will generate a personalized action plan using Meta AI."}
-                    </p>
-                  </div>
-                ) : (
-                  <div>
-                    <div className="rounded-xl border border-(--border) p-4">
-                      <p className="text-xs font-bold text-teal-400">
-                        Flight information supplied to AI
-                      </p>
-
-                      <p className="mt-2 text-xs leading-6 text-(--muted)">
-                        {flight.dataSource === "demo"
-                          ? "Demo information"
-                          : "Unverified third-party information"}
-                        {" · Status: "}
-                        {flight.status}
-                        {" · Delay: "}
-                        {formatDelay(delayMinutes)}
-                      </p>
-
-                      <p className="mt-2 text-xs text-(--muted)">
-                        Everything below is an AI suggestion to verify.
-                      </p>
-
-                      {facts?.status && (
-                        <p className="mt-2 text-xs text-(--muted)">
-                          AI-reported status: {facts.status}
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="mt-5 flex items-center justify-between">
-                      <h3 className="font-bold">Your recovery plan</h3>
-
-                      <button
-                        type="button"
-                        onClick={copyAdvice}
-                        className="flex items-center gap-2 text-sm"
-                      >
-                        {copied ? (
-                          <CheckCircle2 size={16} />
-                        ) : (
-                          <Copy size={16} />
-                        )}
-                        {copied ? "Copied" : "Copy"}
-                      </button>
-                    </div>
-
-                    <div className="mt-4 whitespace-pre-wrap text-sm leading-8">
-                      {advice}
-                    </div>
-                  </div>
-                )}
+              <div>
+                <p className="font-bold">Airtur Copilot</p>
+                <p className="text-xs text-[#a9c9d2]">
+                  Example recovery workflow
+                </p>
               </div>
             </div>
-          </section>
 
-          <section
-            id="recovery-center"
-            className="scroll-mt-28 space-y-6 pb-12"
+            <div className="mt-7 rounded-xl bg-white/10 p-5">
+              <div className="flex items-center gap-2 text-[#85e5dc]">
+                <Clock3 size={18} />
+                <span className="text-sm font-bold">Flight delayed</span>
+              </div>
+              <p className="mt-3 text-sm leading-7 text-[#d1e3e8]">
+                Your departure is delayed by six hours. You have time to explore
+                your options.
+              </p>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <div className="rounded-xl border border-white/15 p-4">
+                <MapPinned size={20} className="text-[#85e5dc]" />
+                <p className="mt-3 text-sm font-semibold">Plan airport time</p>
+              </div>
+              <div className="rounded-xl border border-white/15 p-4">
+                <RefreshCw size={20} className="text-[#85e5dc]" />
+                <p className="mt-3 text-sm font-semibold">Explore rebooking</p>
+              </div>
+            </div>
+
+            <p className="mt-5 text-xs leading-6 text-[#a9c9d2]">
+              Illustrative scenario. No live flight or booking availability is
+              implied.
+            </p>
+          </div>
+        </section>
+
+        {/* FAQ */}
+        <section
+          id="faq"
+          className="mx-auto max-w-3xl px-5 pb-20 md:px-10 md:pb-28"
+        >
+          <h2
+            className={`${display.className} text-center text-3xl font-extrabold tracking-tight md:text-4xl`}
           >
-            <div>
-              <p className="text-xs font-bold tracking-widest text-teal-400">
-                RECOVERY CENTER
-              </p>
+            Questions, answered.
+          </h2>
+          <div className="mt-10 divide-y divide-[#dbe7ea] overflow-hidden rounded-2xl border border-[#d9e6ea] bg-white">
+            {faqs.map((f) => (
+              <details key={f.q} className="group p-6">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-4 font-bold [&::-webkit-details-marker]:hidden">
+                  {f.q}
+                  <ChevronDown
+                    size={20}
+                    className="shrink-0 text-[#087f8c] transition group-open:rotate-180"
+                  />
+                </summary>
+                <p className="mt-3 text-sm leading-7 text-[#5a7183]">{f.a}</p>
+              </details>
+            ))}
+          </div>
+        </section>
 
-              <h2 className="mt-2 text-2xl font-bold">Choose your next step</h2>
+        {/* CTA */}
+        <section className="px-5 pb-20 md:px-10">
+          <div className="relative mx-auto max-w-7xl overflow-hidden rounded-3xl bg-linear-to-br from-[#087f8c] via-[#0a93a0] to-[#0a6f86] px-7 py-16 text-center text-white md:px-16 md:py-20">
+            <div className="pointer-events-none absolute -left-20 -top-20 h-72 w-72 rounded-full border border-white/15" />
+            <div className="pointer-events-none absolute -bottom-24 -right-16 h-80 w-80 rounded-full border border-white/15" />
+            <h2
+              className={`${display.className} relative text-3xl font-extrabold md:text-5xl`}
+            >
+              Your journey deserves a better backup plan.
+            </h2>
+            <p className="relative mx-auto mt-5 max-w-xl leading-8 text-white/85">
+              Try Airtur and see how AI can help you handle unexpected travel
+              disruptions.
+            </p>
+            <Link
+              href="/dashboard"
+              className="group relative mt-9 inline-flex items-center gap-2 rounded-xl px-8 py-4 font-bold text-[#087f8c] shadow-lg transition hover:bg-[#e8f7f6]"
+            >
+              Launch Airtur
+              <ArrowRight
+                size={18}
+                className="transition group-hover:translate-x-1"
+              />
+            </Link>
+          </div>
+        </section>
+      </main>
 
-              <p className="mt-2 text-sm text-(--muted)">
-                Explore practical ways to respond to your current flight
-                situation.
-              </p>
-            </div>
-
-            <RecoveryActions flight={flightForAi} />
-
-            <div className="flex items-start gap-3 rounded-xl border border-(--border) p-4">
-              <Clock3 size={19} className="mt-1 shrink-0 text-teal-400" />
-
-              <p className="text-xs leading-6 text-(--muted)">
-                Airtur provides planning assistance, not confirmed flight
-                bookings, guaranteed alternatives, or official airline
-                instructions. Verify important decisions before acting.
-              </p>
-            </div>
-          </section>
-        </main>
-      </div>
+      <footer className="border-t border-[#e1e9ed] bg-white px-5 py-8 md:px-10">
+        <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-4 text-center text-sm text-[#5a7183] md:flex-row">
+          <span
+            className={`${display.className} text-lg font-extrabold text-[#0d2638]`}
+          >
+            airtur.
+          </span>
+          <span>Flight disrupted? Know your next move.</span>
+          <span className="flex items-center gap-2">
+            <ShieldCheck size={16} />
+            AI guidance, not confirmed bookings
+          </span>
+        </div>
+      </footer>
     </div>
   );
 }
